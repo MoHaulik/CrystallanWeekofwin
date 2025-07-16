@@ -6,6 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js"
+    }
+  }
+  </script>
+
   <style>
     body { 
       margin: 0; 
@@ -51,6 +60,29 @@
     .webxr-hidden {
       display: none !important;
     }
+    .exit-ar { 
+      position: fixed; 
+      top: 20px; 
+      right: 20px; 
+      background: rgba(255, 255, 255, 0.25); 
+      color: white; 
+      border: none; 
+      border-radius: 50%; 
+      width: 50px; 
+      height: 50px; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      font-size: 24px; 
+      cursor: pointer; 
+      backdrop-filter: blur(5px); 
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2); 
+      z-index: 1000; 
+      display: none; 
+    }
+    .xr-active .exit-ar { 
+      display: flex; 
+    }
   </style>
 </head>
 <body>
@@ -59,16 +91,19 @@
     <div id="status"></div>
   </div>
   
+  <button class="exit-ar" id="exit-ar">×</button>
+  
   <audio id="death-sound" preload="auto">
     <source src="dead.mp3" type="audio/mpeg">
   </audio>
   
   <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+    import * as THREE from 'three';
     import { GLTFLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js';
 
     let camera, scene, renderer;
     let controller;
+    let controllers = [];
     let player;
     let ground;
     let particles = [];
@@ -88,6 +123,7 @@
     let restartLearningPeriod = 2; // 2 seconds for restarts
     let countdownInterval;
     let isFirstRun = true;
+    let xrSession = null;
     
     // Game state variables
     let lives = 3;
@@ -102,7 +138,7 @@
     
     // GLB models
     let gemModels = [];
-    let loader = new GLTFLoader();
+    let gltfLoader = null;
     
     const crystalColors = [
       0x84f7fd,
@@ -113,6 +149,17 @@
     
     let envObjects = [];
     let trailParticles = [];
+    
+    function updateStatus(message) {
+      const statusElement = document.getElementById('status');
+      statusElement.style.display = 'block';
+      statusElement.textContent = message;
+      console.log('Status:', message);
+      
+      if (!message.includes('error') && !message.includes('Failed')) {
+        setTimeout(() => { statusElement.style.display = 'none'; }, 5000);
+      }
+    }
     
     init();
 
@@ -132,6 +179,9 @@
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       document.body.appendChild(renderer.domElement);
 
+      // Initialize GLTF loader
+      gltfLoader = new GLTFLoader();
+      
       // Load gem models
       loadGemModels();
 
@@ -164,44 +214,66 @@
       scene.add(pointLight2);
 
       document.getElementById('start-button').addEventListener('click', startARSession);
+      document.getElementById('exit-ar').addEventListener('click', endARSession);
       window.addEventListener('resize', onWindowResize);
     }
 
-    function loadGemModels() {
+    async function loadGemModels() {
+      updateStatus('Loading gem models...');
+      
       for (let i = 1; i <= 6; i++) {
-        loader.load(`gem${i}.glb`, (gltf) => {
-          gemModels.push(gltf.scene.clone());
-        }, undefined, (error) => {
+        try {
+          const gltf = await new Promise((resolve, reject) => {
+            gltfLoader.load(
+              `gem${i}.glb`,
+              resolve,
+              null,
+              reject
+            );
+          });
+          
+          gltf.scene.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+            }
+          });
+          
+          gemModels.push(gltf.scene);
+          
+        } catch (error) {
           console.warn(`Failed to load gem${i}.glb:`, error);
-        });
+        }
       }
-    }
-
-    function startARSession() {
-      if (navigator.xr) {
-        navigator.xr.isSessionSupported('immersive-ar').then(supported => {
-          if (supported) {
-            const sessionInit = {
-              requiredFeatures: ['hit-test'],
-              optionalFeatures: ['dom-overlay'],
-              domOverlay: { root: document.body }
-            };
-            navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
-          } else {
-            updateStatus('WebXR AR session is not supported on this device.');
-          }
-        });
+      
+      if (gemModels.length > 0) {
+        updateStatus(`Loaded ${gemModels.length} gem models successfully!`);
       } else {
-        updateStatus('WebXR is not supported in this browser.');
+        updateStatus('Using fallback geometry for obstacles');
       }
     }
 
-    function updateStatus(message) {
-      // Only show status if not in WebXR session
-      if (!renderer.xr.getSession()) {
-        const el = document.getElementById('status');
-        el.style.display = 'block';
-        el.textContent = message;
+    async function startARSession() {
+      if (!navigator.xr) {
+        updateStatus('WebXR not supported on this device');
+        return;
+      }
+      
+      try {
+        const supported = await navigator.xr.isSessionSupported('immersive-ar');
+        if (supported) {
+          const sessionInit = {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['dom-overlay'],
+            domOverlay: { root: document.body }
+          };
+          const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
+          onSessionStarted(session);
+        } else {
+          updateStatus('WebXR AR session is not supported on this device.');
+        }
+      } catch (error) {
+        updateStatus('Failed to start AR session: ' + error.message);
       }
     }
 
@@ -221,10 +293,16 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    function onSessionStarted(session) {
+    async function onSessionStarted(session) {
+      xrSession = session;
+      document.getElementById('start-button').style.display = 'none';
+      document.body.classList.add('xr-active');
+      
       renderer.xr.setReferenceSpaceType('local');
       renderer.xr.setSession(session);
       hideUIElements();
+
+      updateStatus('Creating crystal world...');
 
       // Start playing background music
       backgroundMusic.play().catch(err => {
@@ -256,10 +334,19 @@
           clearInterval(countdownInterval);
         }
       }, 1000);
+
+      updateStatus('Game started! Good luck!');
+    }
+
+    function endARSession() {
+      if (xrSession) {
+        xrSession.end();
+      }
     }
 
     function onSessionEnd() {
       isPlaying = false;
+      document.body.classList.remove('xr-active');
       showUIElements();
       document.getElementById('start-button').style.display = 'block';
       if (countdownInterval) clearInterval(countdownInterval);
@@ -269,16 +356,55 @@
       backgroundMusic.currentTime = 0;
 
       // Clean up scene
+      clearScene();
+      
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+    }
+
+    function clearScene() {
       if (player) scene.remove(player);
       if (ground) scene.remove(ground);
       if (scorePanel) scene.remove(scorePanel);
-      obstacles.forEach(o => scene.remove(o));
+      
+      obstacles.forEach(o => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+          if (Array.isArray(o.material)) {
+            o.material.forEach(mat => mat.dispose());
+          } else {
+            o.material.dispose();
+          }
+        }
+        scene.remove(o);
+      });
       obstacles = [];
-      envObjects.forEach(o => scene.remove(o));
+      
+      envObjects.forEach(o => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+          if (Array.isArray(o.material)) {
+            o.material.forEach(mat => mat.dispose());
+          } else {
+            o.material.dispose();
+          }
+        }
+        scene.remove(o);
+      });
       envObjects = [];
-      particles.forEach(p => scene.remove(p));
+      
+      particles.forEach(p => {
+        if (p.geometry) p.geometry.dispose();
+        if (p.material) p.material.dispose();
+        scene.remove(p);
+      });
       particles = [];
-      trailParticles.forEach(p => scene.remove(p));
+      
+      trailParticles.forEach(p => {
+        if (p.geometry) p.geometry.dispose();
+        if (p.material) p.material.dispose();
+        scene.remove(p);
+      });
       trailParticles = [];
     }
 
@@ -492,24 +618,33 @@
     }
 
     function setupController(session) {
-      controller = renderer.xr.getController(0);
-      controller.addEventListener('connected', e => console.log(`Controller connected: ${e.data.handedness}`));
-      scene.add(controller);
-      const cg = new THREE.Group();
-      const geom = new THREE.CylinderGeometry(0.01, 0.02, 0.1, 16);
-      const mat = new THREE.MeshPhysicalMaterial({
-        color: 0xff4500,
-        roughness: 0.2,
-        metalness: 0.7,
-        clearcoat: 1.0,
-        emissive: 0xff2000,
-        emissiveIntensity: 0.3
-      });
-      const cm = new THREE.Mesh(geom, mat);
-      cm.rotation.x = Math.PI/2;
-      cg.add(cm);
-      cg.add(new THREE.PointLight(0xff4500, 1.5, 0.3));
-      controller.add(cg);
+      controllers = [];
+      for (let i = 0; i < 2; i++) {
+        controller = renderer.xr.getController(i);
+        controller.addEventListener('connected', e => console.log(`Controller ${i} connected: ${e.data.handedness}`));
+        scene.add(controller);
+        
+        const cg = new THREE.Group();
+        const geom = new THREE.CylinderGeometry(0.01, 0.02, 0.1, 16);
+        const mat = new THREE.MeshPhysicalMaterial({
+          color: 0xff4500,
+          roughness: 0.2,
+          metalness: 0.7,
+          clearcoat: 1.0,
+          emissive: 0xff2000,
+          emissiveIntensity: 0.3
+        });
+        const cm = new THREE.Mesh(geom, mat);
+        cm.rotation.x = Math.PI/2;
+        cg.add(cm);
+        cg.add(new THREE.PointLight(0xff4500, 1.5, 0.3));
+        controller.add(cg);
+        
+        controllers.push(controller);
+      }
+      
+      // Use first controller for primary input
+      controller = controllers[0];
     }
 
     function spawnObstacle() {
