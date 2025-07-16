@@ -656,8 +656,8 @@
         const randomGem = gemModels[Math.floor(Math.random() * gemModels.length)];
         const gemClone = randomGem.clone();
         
-        // Scale the gem appropriately
-        gemClone.scale.setScalar(0.3);
+        // Scale the gem appropriately (10x smaller)
+        gemClone.scale.setScalar(0.03);
         
         // Enable shadows for all meshes in the model
         gemClone.traverse((child) => {
