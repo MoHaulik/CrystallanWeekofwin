@@ -65,6 +65,7 @@
   
   <script type="module">
     import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+    import { GLTFLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js';
 
     let camera, scene, renderer;
     let controller;
@@ -87,6 +88,10 @@
     let restartLearningPeriod = 2; // 2 seconds for restarts
     let countdownInterval;
     let isFirstRun = true;
+    
+    // GLB models
+    let gemModels = [];
+    let loader = new GLTFLoader();
     
     // Game state variables
     let lives = 3;
@@ -128,6 +133,9 @@
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       document.body.appendChild(renderer.domElement);
 
+      // Load gem models
+      loadGemModels();
+
       // Preload death sound
       const deathSound = document.getElementById('death-sound');
       deathSound.load();
@@ -158,6 +166,16 @@
 
       document.getElementById('start-button').addEventListener('click', startARSession);
       window.addEventListener('resize', onWindowResize);
+    }
+
+    function loadGemModels() {
+      for (let i = 1; i <= 6; i++) {
+        loader.load(`gem${i}.glb`, (gltf) => {
+          gemModels.push(gltf.scene);
+        }, undefined, (error) => {
+          console.warn(`Failed to load gem${i}.glb:`, error);
+        });
+      }
     }
 
     function startARSession() {
@@ -521,23 +539,55 @@
     function spawnObstacle() {
       const lane = Math.floor(Math.random()*3);
       const grp = new THREE.Group();
+      
+      // Use GLB model if available, otherwise fallback to generated gem
+      if (gemModels.length > 0) {
+        const randomGem = gemModels[Math.floor(Math.random() * gemModels.length)];
+        const gemClone = randomGem.clone();
+        
+        // Scale the gem model appropriately
+        gemClone.scale.setScalar(0.3);
+        
+        // Add some material properties for better lighting
+        gemClone.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+            if (child.material) {
+              child.material.metalness = 0.2;
+              child.material.roughness = 0.1;
+              const color = crystalColors[Math.floor(Math.random()*crystalColors.length)];
+              child.material.emissive = new THREE.Color(color);
+              child.material.emissiveIntensity = 0.3;
+            }
+          }
+        });
+        
+        grp.add(gemClone);
+      } else {
+        // Fallback to generated crystal
+        const color = crystalColors[Math.floor(Math.random()*crystalColors.length)];
+        const mat = new THREE.MeshPhysicalMaterial({
+          color,
+          roughness: 0.1,
+          metalness: 0.2,
+          transmission: 0.8,
+          thickness: 0.5,
+          clearcoat: 1.0,
+          clearcoatRoughness: 0.1,
+          envMapIntensity: 1.5,
+          emissive: color,
+          emissiveIntensity: 0.4
+        });
+        const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.15, 0), mat);
+        mesh.castShadow = true;
+        grp.add(mesh);
+      }
+      
+      // Add light effect
       const color = crystalColors[Math.floor(Math.random()*crystalColors.length)];
-      const mat = new THREE.MeshPhysicalMaterial({
-        color,
-        roughness: 0.1,
-        metalness: 0.2,
-        transmission: 0.8,
-        thickness: 0.5,
-        clearcoat: 1.0,
-        clearcoatRoughness: 0.1,
-        envMapIntensity: 1.5,
-        emissive: color,
-        emissiveIntensity: 0.4
-      });
-      const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.15, 0), mat);
-      mesh.castShadow = true;
-      grp.add(mesh);
       grp.add(new THREE.PointLight(color, 1.5, 0.4));
+      
       grp.position.set(lanePositions[lane], -0.2, -15);
       grp.userData = { isObstacle: true, lane };
       scene.add(grp);
@@ -646,19 +696,36 @@
       if (!controller || !isPlaying) return;
       const rot = new THREE.Euler().setFromQuaternion(controller.quaternion);
       const d = rot.z - lastControllerRotation.z;
-      if (Math.abs(d)>0.1) {
-        playerLane = d>0?Math.min(playerLane+1,2):Math.max(playerLane-1,0);
-        update3DStatus(`${['Left','Center','Right'][playerLane]} lane`);
-        createTrailEffect(player.position,10);
+      
+      // Increased threshold for easier middle lane control and bias toward center
+      const threshold = 0.15; // Increased from 0.1 for less sensitivity
+      
+      if (Math.abs(d) > threshold) {
+        const newLane = d > 0 ? Math.min(playerLane + 1, 2) : Math.max(playerLane - 1, 0);
+        
+        // Bias toward center lane - make it easier to return to center
+        if (playerLane !== 1 && Math.abs(d) > threshold * 0.7) {
+          if ((playerLane === 0 && d > 0) || (playerLane === 2 && d < 0)) {
+            playerLane = 1; // Jump to center more easily
+          } else {
+            playerLane = newLane;
+          }
+        } else {
+          playerLane = newLane;
+        }
+        
+        // Removed the lane announcement text as requested
+        createTrailEffect(player.position, 10);
       }
+      
       const tx = lanePositions[playerLane];
-      player.position.x += (tx-player.position.x)*0.2;
+      player.position.x += (tx - player.position.x) * 0.2;
       
       // Simple bubble floating with single sine wave
       const time = clock.getElapsedTime();
       player.position.y = -0.2 + Math.sin(time * 2) * 0.03;
-      player.rotation.y += (tx-player.position.x)*0.1;
-      player.rotation.z = (tx-player.position.x)*0.3;
+      player.rotation.y += (tx - player.position.x) * 0.1;
+      player.rotation.z = (tx - player.position.x) * 0.3;
       
       // Simple highlight animation
       if (player.children[1]) {
