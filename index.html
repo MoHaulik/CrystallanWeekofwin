@@ -653,11 +653,18 @@
       
       // Use GLB model if available, otherwise fallback to generated geometry
       if (gemModels.length > 0) {
-        const randomGem = gemModels[Math.floor(Math.random() * gemModels.length)];
+        const gemIndex = Math.floor(Math.random() * gemModels.length);
+        const randomGem = gemModels[gemIndex];
         const gemClone = randomGem.clone();
         
-        // Scale the gem appropriately (10x smaller)
-        gemClone.scale.setScalar(0.03);
+        // Scale the gem appropriately with specific sizes for different gems
+        let scale = 0.03; // Default scale
+        if (gemIndex === 3) { // gem4 (index 3) - 10x smaller
+          scale = 0.003;
+        } else if (gemIndex === 5) { // gem6 (index 5) - 1/3 size
+          scale = 0.01;
+        }
+        gemClone.scale.setScalar(scale);
         
         // Enable shadows for all meshes in the model
         gemClone.traverse((child) => {
